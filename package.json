@@ -1,0 +1,14 @@
+{
+  "name": "repo-radar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Aggregate GitHub activity stats for a list of users — raw Node.js, zero deps.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  }
+}
