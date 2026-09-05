@@ -10,6 +10,7 @@ const DEFAULTS = {
   config: './repos.json',
   output: './report',
   verbose: false,
+  concurrency: 5,
   help: false,
 };
 
@@ -26,6 +27,7 @@ test('--config a.json --output b --verbose applies all three', () => {
     config: 'a.json',
     output: 'b',
     verbose: true,
+    concurrency: 5,
     help: false,
   });
 });
@@ -76,4 +78,24 @@ test('bare positional argument is rejected', () => {
 
 test('boolean flag given a value throws', () => {
   assert.throws(() => parseArgs(argv('--verbose=1')), ArgError);
+});
+
+test('--concurrency 3 sets concurrency', () => {
+  assert.deepEqual(parseArgs(argv('--concurrency', '3')), { ...DEFAULTS, concurrency: 3 });
+});
+
+test('--concurrency 0 throws ArgError', () => {
+  assert.throws(() => parseArgs(argv('--concurrency', '0')), ArgError);
+});
+
+test('--concurrency -1 throws ArgError', () => {
+  assert.throws(() => parseArgs(argv('--concurrency', '-1')), ArgError);
+});
+
+test('--concurrency abc throws ArgError', () => {
+  assert.throws(() => parseArgs(argv('--concurrency', 'abc')), ArgError);
+});
+
+test('--concurrency 2.5 throws ArgError', () => {
+  assert.throws(() => parseArgs(argv('--concurrency', '2.5')), ArgError);
 });

@@ -1,8 +1,10 @@
 import { pathToFileURL } from 'node:url';
+import { EventEmitter } from 'node:events';
 import { loadConfig, ConfigError } from './config.js';
 import { fetchAllUsersParallel } from './github.js';
 import { aggregateAll } from './aggregate.js';
 import { writeReports } from './report.js';
+import { logger, setVerbose, colors } from './utils/logger.js';
 
 /**
  * Thrown when the command line cannot be parsed. `main()` catches this and prints
@@ -24,6 +26,7 @@ const FLAG_SPEC = {
   '--config': { key: 'config', type: 'string' },
   '--output': { key: 'output', type: 'string' },
   '--verbose': { key: 'verbose', type: 'boolean' },
+  '--concurrency': { key: 'concurrency', type: 'positiveInt' },
   '--help': { key: 'help', type: 'boolean' },
   '-h': { key: 'help', type: 'boolean' },
 };
@@ -34,15 +37,17 @@ Usage:
   node src/index.js [options]
 
 Options:
-  --config <path>    Path to the JSON config file      (default: ./repos.json)
-  --output <name>    Base name/path for report files   (default: ./report)
-  --verbose          Print progress and debug details
-  -h, --help         Show this help and exit
+  --config <path>       Path to the JSON config file      (default: ./repos.json)
+  --output <name>       Base name/path for report files   (default: ./report)
+  --verbose             Print progress and debug details
+  --concurrency <n>     Max parallel GitHub requests      (default: 5)
+  -h, --help            Show this help and exit
 
 Examples:
   node src/index.js
   node src/index.js --config repos.json --output report --verbose
-  node src/index.js --config=./data/repos.json`;
+  node src/index.js --config=./data/repos.json
+  node src/index.js --concurrency 10`;
 
 /**
  * Turn a raw `process.argv`-style array into a clean options object.
@@ -53,7 +58,7 @@ Examples:
  * Positional arguments are rejected (this tool takes only flags).
  *
  * @param {string[]} argv - full argv, including the node binary and script path
- * @returns {{ config: string, output: string, verbose: boolean, help: boolean }}
+ * @returns {{ config: string, output: string, verbose: boolean, concurrency: number, help: boolean }}
  */
 export function parseArgs(argv) {
   const args = argv.slice(2);
@@ -61,6 +66,7 @@ export function parseArgs(argv) {
     config: './repos.json',
     output: './report',
     verbose: false,
+    concurrency: 5,
     help: false,
   };
 
@@ -95,10 +101,35 @@ export function parseArgs(argv) {
     if (value === undefined || value.startsWith('-')) {
       throw new ArgError(`Missing value for ${token}`);
     }
+
+    if (spec.type === 'positiveInt') {
+      const n = Number(value);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new ArgError(`${token} must be a positive integer, got: ${value}`);
+      }
+      options[spec.key] = n;
+      continue;
+    }
+
     options[spec.key] = value;
   }
 
   return options;
+}
+
+/**
+ * All fetches failed for the same reason: the request never reached GitHub at
+ * all (DNS failure, no route, offline, etc). `fetchUserRepos` normalizes any
+ * error thrown by `fetch()` itself into a `Network error fetching <user>: ...`
+ * message (as opposed to the distinct templates used for 404/403/5xx
+ * responses), so matching that prefix cleanly tells "never reached GitHub"
+ * apart from "GitHub responded with an error" without parsing OS error codes.
+ */
+function isAllNetworkFailure(results) {
+  return (
+    results.length > 0 &&
+    results.every((r) => r.status === 'error' && r.error.startsWith('Network error fetching'))
+  );
 }
 
 async function main() {
@@ -118,8 +149,10 @@ async function main() {
     process.exit(0);
   }
 
+  setVerbose(options.verbose);
+
   if (options.verbose) {
-    console.log(options);
+    logger.debug(JSON.stringify(options));
   }
 
   let config;
@@ -127,40 +160,53 @@ async function main() {
     config = await loadConfig(options.config);
   } catch (err) {
     if (err instanceof ConfigError) {
-      console.error(err.message);
+      logger.error(err.message);
     } else {
-      console.error(`Unexpected error loading config: ${err.message}`);
+      logger.error(`Unexpected error loading config: ${err.message}`);
     }
     process.exit(1);
   }
 
-  const results = await fetchAllUsersParallel(config.users, 5, { verbose: options.verbose });
-
+  const emitter = new EventEmitter();
   let okCount = 0;
   let errorCount = 0;
-  for (const result of results) {
-    if (result.status === 'ok') {
+  emitter.on('progress', (event) => {
+    if (event.status === 'ok') {
       okCount++;
-      console.log(`${result.username}: ok (${result.repos.length} repos)`);
+      console.log(colors.green(`✓ ${event.username} (${event.repoCount} repos)`));
     } else {
       errorCount++;
-      console.log(`${result.username}: error — ${result.error}`);
+      console.log(colors.red(`✗ ${event.username} — ${event.error}`));
     }
-  }
+  });
+
+  const results = await fetchAllUsersParallel(config.users, options.concurrency, {
+    verbose: options.verbose,
+    emitter,
+  });
+
   console.log(`\nDone: ${okCount} succeeded, ${errorCount} failed out of ${results.length} users.`);
+
+  if (isAllNetworkFailure(results)) {
+    logger.error('Network error: could not reach api.github.com. Check your internet connection.');
+    process.exit(1);
+  }
 
   const stats = aggregateAll(results);
 
   try {
     await writeReports(stats, options.output);
   } catch (err) {
-    console.error(`Failed to write reports: ${err.message}`);
+    logger.error(`Failed to write reports: ${err.message}`);
     process.exit(1);
   }
 
-  console.log(`Reports written to ${options.output}.json and ${options.output}.csv`);
+  logger.info(`Reports written to ${options.output}.json and ${options.output}.csv`);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main();
+  main().catch((err) => {
+    logger.error(`Unexpected error: ${err.message}`);
+    process.exit(1);
+  });
 }

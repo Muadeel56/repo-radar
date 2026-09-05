@@ -114,3 +114,17 @@ test('writeReports writes both the .json and .csv files', async (t) => {
   assert.match(csv, /^username,status,repoCount,totalStars,topLanguage,mostRecentRepo,updatedAt,error/);
   assert.match(csv, /alice,ok,1,1,JavaScript,a,2024-01-01T00:00:00Z,/);
 });
+
+test('writeReports creates the output directory if it does not exist', async (t) => {
+  const dir = await makeTempDir(t);
+  const output = path.join(dir, 'nested', 'subdir', 'report');
+  const data = [{ username: 'alice', status: 'ok', totalStars: 1, topLanguage: 'JavaScript', repoCount: 1, mostRecentRepo: { name: 'a', updatedAt: '2024-01-01T00:00:00Z' } }];
+
+  await writeReports(data, output);
+
+  const json = JSON.parse(await readFile(`${output}.json`, 'utf8'));
+  assert.deepEqual(json, data);
+
+  const csv = await readFile(`${output}.csv`, 'utf8');
+  assert.match(csv, /^username,status,repoCount,totalStars,topLanguage,mostRecentRepo,updatedAt,error/);
+});

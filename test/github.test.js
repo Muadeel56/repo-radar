@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 
 import {
   fetchUserRepos,
@@ -46,6 +47,7 @@ test('fetchUserRepos throws rate-limit message on 403 with remaining=0', async (
     assert.ok(err instanceof GitHubApiError);
     assert.equal(err.status, 403);
     assert.match(err.message, /Rate limited fetching someone \(resets at .+\)/);
+    assert.match(err.message, /Consider using a GitHub token to increase your rate limit\./);
     return true;
   });
 });
@@ -141,4 +143,30 @@ test('fetchAllUsersParallel respects concurrency limit', async (t) => {
   const usernames = Array.from({ length: 10 }, (_, i) => `user${i}`);
   await fetchAllUsersParallel(usernames, 3);
   assert.ok(maxActive <= 3, `expected max 3 concurrent, got ${maxActive}`);
+});
+
+test('fetchAllUsersParallel emits a progress event per completed user', async (t) => {
+  t.mock.method(global, 'fetch', async (url) => {
+    if (url.includes('bad')) return fakeResponse({ status: 404 });
+    return fakeResponse({ status: 200, body: [{ name: 'r' }] });
+  });
+  const emitter = new EventEmitter();
+  const events = [];
+  emitter.on('progress', (e) => events.push(e));
+
+  await fetchAllUsersParallel(['good', 'bad'], 2, { emitter });
+
+  assert.equal(events.length, 2);
+  assert.ok(events.some((e) => e.username === 'good' && e.status === 'ok' && e.repoCount === 1));
+  assert.ok(
+    events.some(
+      (e) => e.username === 'bad' && e.status === 'error' && /GitHub user not found: bad/.test(e.error)
+    )
+  );
+});
+
+test('fetchAllUsersParallel works without an emitter', async (t) => {
+  t.mock.method(global, 'fetch', async () => fakeResponse({ status: 200, body: [] }));
+  const results = await fetchAllUsersParallel(['a'], 1);
+  assert.equal(results[0].status, 'ok');
 });

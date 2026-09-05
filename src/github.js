@@ -1,4 +1,5 @@
 // Phase 3: fetch repo data from the GitHub API (concurrency-limited, with retry).
+import { logger } from './utils/logger.js';
 
 export class GitHubApiError extends Error {
   constructor(message, { status, username } = {}) {
@@ -27,9 +28,12 @@ function formatResetTime(resetHeader) {
 }
 
 function logRateLimitHeaders(headers, username, verbose) {
+  // `verbose` is still accepted for backward compatibility with existing call
+  // sites/tests, but `logger.debug` itself gates on the verbose flag set via
+  // `setVerbose()`, so this is effectively a no-op unless that flag is on too.
   if (!verbose) return;
-  console.error(
-    `[verbose] ${username}: rate-limit remaining=${headers.get('x-ratelimit-remaining')} ` +
+  logger.debug(
+    `${username}: rate-limit remaining=${headers.get('x-ratelimit-remaining')} ` +
       `limit=${headers.get('x-ratelimit-limit')} reset=${headers.get('x-ratelimit-reset')}`
   );
 }
@@ -66,10 +70,11 @@ export async function fetchUserRepos(username, { verbose = false } = {}) {
 
   if (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0') {
     const resetAt = formatResetTime(response.headers.get('x-ratelimit-reset'));
-    throw new GitHubApiError(`Rate limited fetching ${username} (resets at ${resetAt})`, {
-      status: 403,
-      username,
-    });
+    throw new GitHubApiError(
+      `Rate limited fetching ${username} (resets at ${resetAt}). ` +
+        `Consider using a GitHub token to increase your rate limit.`,
+      { status: 403, username }
+    );
   }
 
   if (response.status >= 500) {
@@ -140,7 +145,11 @@ export async function withRetry(fn, { attempts = 3, baseDelay = 500 } = {}) {
  * index until the queue is empty. Every user gets a settled result — one
  * failure never aborts the batch.
  */
-export async function fetchAllUsersParallel(usernames, concurrency = 5, { verbose = false } = {}) {
+export async function fetchAllUsersParallel(
+  usernames,
+  concurrency = 5,
+  { verbose = false, emitter } = {}
+) {
   const results = new Array(usernames.length);
   let nextIndex = 0;
 
@@ -151,8 +160,10 @@ export async function fetchAllUsersParallel(usernames, concurrency = 5, { verbos
       try {
         const repos = await withRetry(() => fetchUserRepos(username, { verbose }));
         results[i] = { username, status: 'ok', repos };
+        emitter?.emit('progress', { username, status: 'ok', repoCount: repos.length });
       } catch (error) {
         results[i] = { username, status: 'error', error: error.message };
+        emitter?.emit('progress', { username, status: 'error', error: error.message });
       }
     }
   }

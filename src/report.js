@@ -1,6 +1,7 @@
 // Phase 5: write JSON + CSV reports (CSV via a write stream).
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
+import { dirname } from 'node:path';
 
 const CSV_HEADERS = [
   'username',
@@ -97,5 +98,6 @@ export function writeCsvReport(data, path) {
  * @returns {Promise<void>}
  */
 export async function writeReports(data, output) {
+  await mkdir(dirname(output), { recursive: true });
   await Promise.all([writeJsonReport(data, `${output}.json`), writeCsvReport(data, `${output}.csv`)]);
 }
