@@ -1,6 +1,8 @@
 import { pathToFileURL } from 'node:url';
 import { loadConfig, ConfigError } from './config.js';
 import { fetchAllUsersParallel } from './github.js';
+import { aggregateAll } from './aggregate.js';
+import { writeReports } from './report.js';
 
 /**
  * Thrown when the command line cannot be parsed. `main()` catches this and prints
@@ -147,7 +149,16 @@ async function main() {
   }
   console.log(`\nDone: ${okCount} succeeded, ${errorCount} failed out of ${results.length} users.`);
 
-  // Phase 4+ will aggregate `results` into stats and write report.json/report.csv here.
+  const stats = aggregateAll(results);
+
+  try {
+    await writeReports(stats, options.output);
+  } catch (err) {
+    console.error(`Failed to write reports: ${err.message}`);
+    process.exit(1);
+  }
+
+  console.log(`Reports written to ${options.output}.json and ${options.output}.csv`);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
