@@ -1,4 +1,6 @@
 import { pathToFileURL } from 'node:url';
+import { loadConfig, ConfigError } from './config.js';
+import { fetchAllUsersParallel } from './github.js';
 
 /**
  * Thrown when the command line cannot be parsed. `main()` catches this and prints
@@ -97,7 +99,7 @@ export function parseArgs(argv) {
   return options;
 }
 
-function main() {
+async function main() {
   let options;
   try {
     options = parseArgs(process.argv);
@@ -118,7 +120,34 @@ function main() {
     console.log(options);
   }
 
-  // Phase 2+ will read the config, fetch data, aggregate, and write reports here.
+  let config;
+  try {
+    config = await loadConfig(options.config);
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      console.error(err.message);
+    } else {
+      console.error(`Unexpected error loading config: ${err.message}`);
+    }
+    process.exit(1);
+  }
+
+  const results = await fetchAllUsersParallel(config.users, 5, { verbose: options.verbose });
+
+  let okCount = 0;
+  let errorCount = 0;
+  for (const result of results) {
+    if (result.status === 'ok') {
+      okCount++;
+      console.log(`${result.username}: ok (${result.repos.length} repos)`);
+    } else {
+      errorCount++;
+      console.log(`${result.username}: error — ${result.error}`);
+    }
+  }
+  console.log(`\nDone: ${okCount} succeeded, ${errorCount} failed out of ${results.length} users.`);
+
+  // Phase 4+ will aggregate `results` into stats and write report.json/report.csv here.
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
